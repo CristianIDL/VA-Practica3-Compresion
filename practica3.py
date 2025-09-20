@@ -31,6 +31,13 @@ def leer_imagen():
 
 def mostrar_imagenes(original, comprimida, titulo_original="Original", titulo_comprimida="Comprimida"):
     """Muestra ambas imágenes lado a lado para comparación"""
+    # Calcular métricas de calidad
+    mse = np.mean((original - comprimida) ** 2)
+    psnr = 10 * np.log10((255**2) / mse) if mse > 0 else float('inf')
+    
+    print(f"\nMSE (Error Cuadrático Medio): (1/n) * Σ(Originalᵢ - Comprimidaᵢ)² = {mse:.2f}")
+    print(f"PSNR (Relación Señal-Ruido Pico): 10 * log₁₀(MAX² / MSE) = {psnr:.2f} dB")
+
     # Normalizar para visualización (escala 0-255)
     comprimida_display = normalizar_para_despliegue(comprimida)
     
@@ -38,12 +45,12 @@ def mostrar_imagenes(original, comprimida, titulo_original="Original", titulo_co
     
     plt.subplot(1, 2, 1)
     plt.imshow(original, cmap='gray', vmin=0, vmax=255)
-    plt.title(titulo_original)
+    plt.title(f"{titulo_original}\n[{original.min()}-{original.max()}]")
     plt.axis('off')
     
     plt.subplot(1, 2, 2)
     plt.imshow(comprimida_display, cmap='gray', vmin=0, vmax=255)
-    plt.title(titulo_comprimida)
+    plt.title(f"{titulo_comprimida}\n[{comprimida.min():.1f}-{comprimida.max():.1f}]")
     plt.axis('off')
     
     plt.tight_layout()
@@ -58,75 +65,82 @@ def normalizar_para_despliegue(matriz):
 # --- Funciones por implementar la compresión ---
 def comprimir_imagen(matriz, bits):
     """Función principal de compresión"""
+    print(f"\n=== COMPRESIÓN CON {bits} BITS/PÍXEL ===")
+    
     # Crear matriz de aproximación [P] con el mismo patrón del apunte
     aproximada = calcular_valores_desconocidos(matriz)
+    print(f"Rango de [P]: [{aproximada.min():.2f}, {aproximada.max():.2f}]")
     
     # Calcular matriz de error [E] = [O] - [P]
     error = calcular_matriz_error(matriz, aproximada)
+    print(f"Rango de [E]: [{error.min():.2f}, {error.max():.2f}]")
     
     # Cuantizar errores para obtener MEQ
     meq = cuantizar_errores(error, bits)
+    print(f"Rango de MEQ: [{meq.min()}, {meq.max()}] - {2**bits} niveles")
     
     # Reconstruir imagen final
-    reconstruida = reconstruir_imagen(meq, aproximada, bits)
+    reconstruida = reconstruir_imagen(meq, aproximada, error, bits)
+    print(f"Rango de imagen reconstruida: [{reconstruida.min():.2f}, {reconstruida.max():.2f}]")
     
     return reconstruida
 
+
 def calcular_valores_desconocidos(matriz):
-    """Implementa el método de promedios - Patrón del apunte"""
-    # Crear copia de la matriz original
+    """Implementa el método de promedios - Patrón del apunte CORREGIDO"""
     aproximada = matriz.copy().astype(np.float64)
-    
-    # Aplicar el patrón que vimos en clase
-    # Para una imagen grande, aplicar este patrón en bloques 3x3
     height, width = matriz.shape
     
-    # Asegurarnos de que la imagen tenga dimensiones múltiplos de 3
-    # Para simplificar, trabajamos con el bloque completo
-    for i in range(1, height, 2):  # Filas impares (1, 3, 5...)
-        for j in range(1, width, 2):  # Columnas impares (1, 3, 5...)
-            if i + 1 < height and j + 1 < width:
-                # Aplicar el patrón del apunte para bloque 3x3
+    # Aplicar el patrón exacto del apunte
+    for i in range(1, height-1):  # Evitar bordes
+        for j in range(1, width-1):
+            # Solo procesar las posiciones específicas del patrón
+            if (i % 2 == 1) and (j % 2 == 1) and (i+1 < height) and (j+1 < width):
+                # Patrón exacto del apunte:
                 # [i-1, j-1] [i-1, j] [i-1, j+1]
                 # [i, j-1]   [b1]     [b2]
                 # [i+1, j-1] [b3]     [b4]
                 
-                # b1 = promedio de todos los conocidos en el bloque
-                conocidos = [
+                # b1 = promedio de todos los conocidos alrededor
+                conocidos_b1 = [
                     matriz[i-1, j-1], matriz[i-1, j], matriz[i-1, j+1],
                     matriz[i, j-1], matriz[i+1, j-1]
                 ]
-                b1 = np.mean(conocidos)
+                b1 = np.mean(conocidos_b1)
                 aproximada[i, j] = b1
                 
-                # b2 = promedio de b1 y vecinos izquierda/arriba
-                b2 = np.mean([b1, matriz[i-1, j], matriz[i-1, j+1]])
+                # b2 = promedio de (b1 + vecinos arriba/derecha)
+                conocidos_b2 = [b1, matriz[i-1, j], matriz[i-1, j+1]]
+                b2 = np.mean(conocidos_b2)
                 aproximada[i, j+1] = b2
                 
-                # b3 = promedio de b1, b2 y vecinos conocidos
-                b3 = np.mean([b1, b2, matriz[i, j-1], matriz[i+1, j-1]])
+                # b3 = promedio de (b1 + b2 + vecinos izquierda/abajo)
+                conocidos_b3 = [b1, b2, matriz[i, j-1], matriz[i+1, j-1]]
+                b3 = np.mean(conocidos_b3)
                 aproximada[i+1, j] = b3
                 
-                # b4 = promedio de b1, b2, b3
+                # b4 = promedio de (b1 + b2 + b3)
                 b4 = np.mean([b1, b2, b3])
                 aproximada[i+1, j+1] = b4
     
     return aproximada
-
 
 def calcular_matriz_error(original, aproximada):
     """[O] - [P]"""
     return original.astype(np.float64) - aproximada
 
 def cuantizar_errores(matriz_error, bits):
-    """Calcula θ y genera MEQ"""
+    """Calcula θ y genera MEQ - CORREGIDO"""
     min_error = np.min(matriz_error)
     max_error = np.max(matriz_error)
     
-    # Calcular θ (salto)
-    theta = (max_error - min_error) / (2 ** bits)
+    print(f"Error min: {min_error:.2f}, max: {max_error:.2f}")
     
-    # Crear matriz MEQ (valores enteros que representan intervalos)
+    # Calcular θ (salto) correctamente
+    theta = (max_error - min_error) / (2 ** bits)
+    print(f"Theta (salto): {theta:.4f}")
+    
+    # Crear matriz MEQ correctamente
     meq = np.floor((matriz_error - min_error) / theta).astype(np.int32)
     
     # Asegurar que no exceda el rango permitido
@@ -134,20 +148,21 @@ def cuantizar_errores(matriz_error, bits):
     
     return meq
 
-def reconstruir_imagen(meq, aproximada, bits):
-    """Genera MEQ⁻¹ y reconstruye"""
-    min_error = np.min(aproximada - aproximada)  # 0, pero mantenemos la estructura
-    max_error = np.max(aproximada - aproximada)
-    
+def reconstruir_imagen(meq, aproximada, matriz_error, bits):
+    """Genera MEQ⁻¹ y reconstruye - CORREGIDO"""
+    min_error = np.min(matriz_error)
+    max_error = np.max(matriz_error)
     theta = (max_error - min_error) / (2 ** bits)
     
-    # Reconstruir errores (MEQ⁻¹)
-    errores_reconstruidos = meq.astype(np.float64) * theta + min_error
+    # Reconstruir errores correctamente: MEQ⁻¹ = min_error + MEQ * theta + theta/2
+    # El theta/2 es para tomar el punto medio del intervalo
+    errores_reconstruidos = min_error + meq.astype(np.float64) * theta + theta/2
     
     # Reconstruir imagen final: [P] + MEQ⁻¹
     reconstruida = aproximada + errores_reconstruidos
     
     return reconstruida
+
 
 def interfaz_usuario(imagen):
     """Interfaz principal para selección de bits"""
